@@ -43,7 +43,7 @@ function splitPropertyKey(key) {
   return { name: key.substring(0, hashIndex), suffix: key.substring(hashIndex) };
 }
 
-// ─── 범위에 따라 노드 수집 ───
+// ─── 노드 수집 ───
 
 function getNodesForScope(scope) {
   if (scope === 'selection') {
@@ -51,7 +51,6 @@ function getNodesForScope(scope) {
   } else if (scope === 'page') {
     return figma.currentPage.children.slice();
   } else {
-    // file: 모든 페이지의 자식
     var all = [];
     for (var p = 0; p < figma.root.children.length; p++) {
       var page = figma.root.children[p];
@@ -63,7 +62,6 @@ function getNodesForScope(scope) {
   }
 }
 
-// 재귀적으로 모든 하위 노드 수집
 function collectAll(nodes) {
   var result = [];
   function walk(node) {
@@ -80,8 +78,6 @@ function collectAll(nodes) {
   return result;
 }
 
-// ─── 컴포넌트 수집 헬퍼 ───
-
 function getComponents(scope) {
   if (scope === 'file') {
     return figma.root.findAllWithCriteria({
@@ -91,10 +87,19 @@ function getComponents(scope) {
   var rootNodes = scope === 'page'
     ? figma.currentPage.children.slice()
     : figma.currentPage.selection.slice();
-  var allNodes = collectAll(rootNodes);
-  return allNodes.filter(function (n) {
+  return collectAll(rootNodes).filter(function (n) {
     return n.type === 'COMPONENT' || n.type === 'COMPONENT_SET';
   });
+}
+
+// ─── Variant child name 파싱 헬퍼 ───
+
+function mapVariantPairs(name, mapFn) {
+  return name.split(', ').map(function (pair) {
+    var eqIndex = pair.indexOf('=');
+    if (eqIndex === -1) return pair;
+    return mapFn(pair.substring(0, eqIndex), pair.substring(eqIndex + 1));
+  }).join(', ');
 }
 
 // ─── 1a. 프로퍼티 이름 변환 ───
@@ -115,14 +120,11 @@ function convertPropNames(scope, caseType) {
 
     // VARIANT 프로퍼티 이름: child name에서 = 앞 부분 변환
     if (node.type === 'COMPONENT_SET') {
-      var children = node.children;
-      for (var c = 0; c < children.length; c++) {
-        var child = children[c];
-        var newChildName = child.name.split(', ').map(function (pair) {
-          var eqIndex = pair.indexOf('=');
-          if (eqIndex === -1) return pair;
-          return convertCase(pair.substring(0, eqIndex), caseType) + '=' + pair.substring(eqIndex + 1);
-        }).join(', ');
+      for (var c = 0; c < node.children.length; c++) {
+        var child = node.children[c];
+        var newChildName = mapVariantPairs(child.name, function (prop, val) {
+          return convertCase(prop, caseType) + '=' + val;
+        });
         if (newChildName !== child.name) {
           child.name = newChildName;
           count++;
@@ -137,13 +139,11 @@ function convertPropNames(scope, caseType) {
 
     for (var i = 0; i < keys.length; i++) {
       var key = keys[i];
-      var def = defs[key];
-      if (def.type === 'VARIANT') continue;
+      if (defs[key].type === 'VARIANT') continue;
 
       var parts = splitPropertyKey(key);
       var newName = convertCase(parts.name, caseType);
       if (newName === parts.name) continue;
-
       if (usedNames[newName]) { skipped++; continue; }
       usedNames[newName] = true;
 
@@ -155,6 +155,7 @@ function convertPropNames(scope, caseType) {
 }
 
 // ─── 1b. 프로퍼티 값 변환 (Variant 값) ───
+// child name 수정으로 인해 Figma가 값을 오름차순 정렬함 (API 한계)
 
 function convertPropValues(scope, caseType) {
   var count = 0;
@@ -165,14 +166,11 @@ function convertPropValues(scope, caseType) {
     if (node.remote) continue;
     if (node.type !== 'COMPONENT_SET') continue;
 
-    var children = node.children;
-    for (var c = 0; c < children.length; c++) {
-      var child = children[c];
-      var newName = child.name.split(', ').map(function (pair) {
-        var eqIndex = pair.indexOf('=');
-        if (eqIndex === -1) return pair;
-        return pair.substring(0, eqIndex) + '=' + convertCase(pair.substring(eqIndex + 1), caseType);
-      }).join(', ');
+    for (var c = 0; c < node.children.length; c++) {
+      var child = node.children[c];
+      var newName = mapVariantPairs(child.name, function (prop, val) {
+        return prop + '=' + convertCase(val, caseType);
+      });
       if (newName !== child.name) {
         child.name = newName;
         count++;
@@ -183,47 +181,11 @@ function convertPropValues(scope, caseType) {
   return { count: count, skipped: 0 };
 }
 
-// ─── COMPONENT_SET children 순서 복원 ───
-
-function delay(ms) {
-  return new Promise(function (resolve) { setTimeout(resolve, ms); });
-}
-
-async function saveAndRestoreOrder(scope, fn) {
-  var components = getComponents(scope);
-  var saved = [];
-
-  for (var n = 0; n < components.length; n++) {
-    var node = components[n];
-    if (node.type !== 'COMPONENT_SET') continue;
-    var refs = [];
-    for (var c = 0; c < node.children.length; c++) {
-      refs.push(node.children[c]);
-    }
-    saved.push({ node: node, children: refs });
-  }
-
-  fn();
-
-  await delay(50);
-
-  for (var s = 0; s < saved.length; s++) {
-    var entry = saved[s];
-    var node = entry.node;
-    var original = entry.children;
-    for (var i = 0; i < original.length; i++) {
-      node.insertChild(i, original[i]);
-    }
-  }
-}
-
-
-// ─── 2. 레이어 이름 변환 ───
+// ─── 2. 프레임/섹션/컴포넌트 이름 변환 ───
 
 function convertLayers(scope, caseType) {
   var count = 0;
-  var rootNodes = getNodesForScope(scope);
-  var allNodes = collectAll(rootNodes);
+  var allNodes = collectAll(getNodesForScope(scope));
 
   for (var i = 0; i < allNodes.length; i++) {
     var node = allNodes[i];
@@ -245,15 +207,13 @@ async function convertVariables(caseType) {
   var collections = await figma.variables.getLocalVariableCollectionsAsync();
 
   for (var c = 0; c < collections.length; c++) {
-    var collection = collections[c];
-
-    var varIds = collection.variableIds;
+    var varIds = collections[c].variableIds;
     for (var v = 0; v < varIds.length; v++) {
       var variable = await figma.variables.getVariableByIdAsync(varIds[v]);
       if (!variable) continue;
-      var newVarName = convertCase(variable.name, caseType);
-      if (newVarName !== variable.name) {
-        variable.name = newVarName;
+      var newName = convertCase(variable.name, caseType);
+      if (newName !== variable.name) {
+        variable.name = newName;
         count++;
       }
     }
@@ -265,19 +225,17 @@ async function convertVariables(caseType) {
 
 async function convertStyles(caseType) {
   var count = 0;
-
-  var paintStyles = await figma.getLocalPaintStylesAsync();
-  var textStyles = await figma.getLocalTextStylesAsync();
-  var effectStyles = await figma.getLocalEffectStylesAsync();
-  var gridStyles = await figma.getLocalGridStylesAsync();
-
-  var allStyles = paintStyles.concat(textStyles, effectStyles, gridStyles);
+  var allStyles = [].concat(
+    await figma.getLocalPaintStylesAsync(),
+    await figma.getLocalTextStylesAsync(),
+    await figma.getLocalEffectStylesAsync(),
+    await figma.getLocalGridStylesAsync()
+  );
 
   for (var i = 0; i < allStyles.length; i++) {
-    var style = allStyles[i];
-    var newName = convertCase(style.name, caseType);
-    if (newName !== style.name) {
-      style.name = newName;
+    var newName = convertCase(allStyles[i].name, caseType);
+    if (newName !== allStyles[i].name) {
+      allStyles[i].name = newName;
       count++;
     }
   }
@@ -298,46 +256,36 @@ figma.ui.onmessage = async function (msg) {
       var totalSkipped = 0;
       var details = [];
 
-      var hasPropValues = targets.indexOf('propValues') !== -1;
-      var hasPropNames = targets.indexOf('propNames') !== -1;
+      // 값을 먼저 변환 (이름 변환시 key가 바뀌므로)
+      if (targets.indexOf('propValues') !== -1) {
+        var rv = convertPropValues(scope, caseType);
+        totalCount += rv.count;
+        if (rv.count > 0) details.push((isEn ? 'Prop Values ' : '프로퍼티 값 ') + rv.count);
+      }
 
-      if (hasPropValues || hasPropNames) {
-        var propResults = { valCount: 0, nameCount: 0, nameSkipped: 0 };
-
-        await saveAndRestoreOrder(scope, function () {
-          if (hasPropValues) {
-            var rv = convertPropValues(scope, caseType);
-            propResults.valCount = rv.count;
-          }
-          if (hasPropNames) {
-            var rn = convertPropNames(scope, caseType);
-            propResults.nameCount = rn.count;
-            propResults.nameSkipped = rn.skipped;
-          }
-        });
-
-        totalCount += propResults.valCount + propResults.nameCount;
-        totalSkipped += propResults.nameSkipped;
-        if (propResults.valCount > 0) details.push((isEn ? 'Prop Values ' : '프로퍼티 값 ') + propResults.valCount);
-        if (propResults.nameCount > 0) details.push((isEn ? 'Prop Names ' : '프로퍼티 이름 ') + propResults.nameCount);
+      if (targets.indexOf('propNames') !== -1) {
+        var rn = convertPropNames(scope, caseType);
+        totalCount += rn.count;
+        totalSkipped += rn.skipped;
+        if (rn.count > 0) details.push((isEn ? 'Prop Names ' : '프로퍼티 이름 ') + rn.count);
       }
 
       if (targets.indexOf('layers') !== -1) {
-        var r2 = convertLayers(scope, caseType);
-        totalCount += r2.count;
-        if (r2.count > 0) details.push((isEn ? 'Frames ' : '프레임 ') + r2.count);
+        var rl = convertLayers(scope, caseType);
+        totalCount += rl.count;
+        if (rl.count > 0) details.push((isEn ? 'Frames ' : '프레임 ') + rl.count);
       }
 
       if (targets.indexOf('variables') !== -1) {
-        var r3 = await convertVariables(caseType);
-        totalCount += r3.count;
-        if (r3.count > 0) details.push((isEn ? 'Variables ' : '변수 ') + r3.count);
+        var rv2 = await convertVariables(caseType);
+        totalCount += rv2.count;
+        if (rv2.count > 0) details.push((isEn ? 'Variables ' : '변수 ') + rv2.count);
       }
 
       if (targets.indexOf('styles') !== -1) {
-        var r4 = await convertStyles(caseType);
-        totalCount += r4.count;
-        if (r4.count > 0) details.push((isEn ? 'Styles ' : '스타일 ') + r4.count);
+        var rs = await convertStyles(caseType);
+        totalCount += rs.count;
+        if (rs.count > 0) details.push((isEn ? 'Styles ' : '스타일 ') + rs.count);
       }
 
       if (totalCount === 0 && totalSkipped === 0) {

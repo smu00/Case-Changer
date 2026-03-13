@@ -73,9 +73,16 @@
       padding-left: 16px;
       border-left: 2px solid #e0e0e0;
       margin-left: 8px;
+      align-items: center;
     }
     .sub-options.visible {
       display: flex;
+    }
+    .sub-warn {
+      font-size: 11px;
+      color: #0d6efd;
+      margin-left: auto;
+      white-space: nowrap;
     }
     .sub-chip {
       padding: 0 10px;
@@ -271,32 +278,33 @@
 </head>
 <body>
   <div class="content">
-    <div class="desc" id="desc" data-i18n="desc">대상과 범위를 선택 후 적용하세요.</div>
+    <div class="desc" data-i18n="desc">Select a target and scope, then apply.</div>
     <div>
-      <div class="section-label" data-i18n="target">대상</div>
+      <div class="section-label" data-i18n="target">Target</div>
       <div class="target-group">
-        <div class="target-chip active" data-target="properties" data-i18n="properties">프로퍼티</div>
-        <div class="target-chip" data-target="layers" data-i18n="layers">프레임</div>
-        <div class="target-chip" data-target="variables" data-i18n="variables">변수</div>
-        <div class="target-chip" data-target="styles" data-i18n="styles">스타일</div>
+        <div class="target-chip active" data-target="properties" data-i18n="properties">Properties</div>
+        <div class="target-chip" data-target="layers" data-i18n="layers">Frames</div>
+        <div class="target-chip" data-target="variables" data-i18n="variables">Variables</div>
+        <div class="target-chip" data-target="styles" data-i18n="styles">Styles</div>
       </div>
       <div class="sub-options visible" id="propSubOptions">
-        <div class="sub-chip active" data-sub="propNames"><span class="sub-check"></span><span data-i18n="propNames">이름</span></div>
-        <div class="sub-chip active" data-sub="propValues"><span class="sub-check"></span><span data-i18n="propValues">값</span></div>
+        <div class="sub-chip active" data-sub="propNames"><span class="sub-check"></span><span data-i18n="propNames">Names</span></div>
+        <div class="sub-chip active" data-sub="propValues"><span class="sub-check"></span><span data-i18n="propValues">Values</span></div>
+        <span class="sub-warn" id="propWarn" data-i18n="propWarn">Values will be sorted A→Z</span>
       </div>
     </div>
 
     <div>
-      <div class="section-label" data-i18n="scope">범위</div>
+      <div class="section-label" data-i18n="scope">Scope</div>
       <div class="segment-control" id="scopeControl">
-        <button class="segment-btn active" data-scope="selection" data-i18n="selection">선택 항목</button>
-        <button class="segment-btn" data-scope="page" data-i18n="page">현재 페이지</button>
-        <button class="segment-btn" data-scope="file" data-i18n="file">파일 전체</button>
+        <button class="segment-btn active" data-scope="selection" data-i18n="selection">Selection</button>
+        <button class="segment-btn" data-scope="page" data-i18n="page">Current Page</button>
+        <button class="segment-btn" data-scope="file" data-i18n="file">Entire File</button>
       </div>
     </div>
 
     <div>
-      <div class="section-label" data-i18n="case">케이스</div>
+      <div class="section-label" data-i18n="case">Case</div>
       <div class="case-list">
         <button class="case-btn" data-case="titleCase"><span class="case-radio"></span>Title Case</button>
         <button class="case-btn" data-case="PascalCase"><span class="case-radio"></span>PascalCase</button>
@@ -308,9 +316,9 @@
   </div>
 
   <div class="fixed-footer">
-    <button class="apply-btn" id="applyBtn" disabled data-i18n="apply">적용</button>
+    <button class="apply-btn" id="applyBtn" disabled data-i18n="apply">Apply</button>
     <div class="footer-meta">
-      <button class="lang-btn" id="langBtn">EN</button>
+      <button class="lang-btn" id="langBtn">KO</button>
       <a class="signature" href="https://www.linkedin.com/in/smu00/" target="_blank">designed by smu.</a>
     </div>
   </div>
@@ -318,7 +326,7 @@
   <script>
     var selectedCase = null;
     var selectedTarget = 'properties';
-    var lang = 'ko';
+    var lang = 'en';
 
     var scopeTargets = { properties: true, layers: true, variables: false, styles: false };
 
@@ -329,6 +337,7 @@
         properties: '프로퍼티',
         propNames: '이름',
         propValues: '값',
+        propWarn: '값 변경 시 오름차순 정렬',
         layers: '프레임',
         variables: '변수',
         styles: '스타일',
@@ -348,6 +357,7 @@
         properties: 'Properties',
         propNames: 'Names',
         propValues: 'Values',
+        propWarn: 'Values will be sorted A→Z',
         layers: 'Frames',
         variables: 'Variables',
         styles: 'Styles',
@@ -369,14 +379,12 @@
       document.getElementById('langBtn').textContent = t.langBtn;
       document.querySelectorAll('[data-i18n]').forEach(function (el) {
         var key = el.getAttribute('data-i18n');
-        if (t[key]) {
-          el.textContent = t[key];
-        }
+        if (t[key]) el.textContent = t[key];
       });
     }
 
     document.getElementById('langBtn').addEventListener('click', function () {
-      setLang(lang === 'ko' ? 'en' : 'ko');
+      setLang(lang === 'en' ? 'ko' : 'en');
     });
 
     function updateScopeState() {
@@ -397,7 +405,6 @@
       }
     }
 
-    // 대상 선택 (단일)
     document.querySelectorAll('.target-chip').forEach(function (chip) {
       chip.addEventListener('click', function () {
         document.querySelectorAll('.target-chip').forEach(function (c) {
@@ -410,14 +417,18 @@
       });
     });
 
-    // 프로퍼티 서브옵션 토글
+    function updatePropWarn() {
+      var valChip = document.querySelector('.sub-chip[data-sub="propValues"]');
+      document.getElementById('propWarn').style.display = valChip.classList.contains('active') ? '' : 'none';
+    }
+
     document.querySelectorAll('.sub-chip').forEach(function (chip) {
       chip.addEventListener('click', function () {
         chip.classList.toggle('active');
+        updatePropWarn();
       });
     });
 
-    // 범위 세그먼트
     document.querySelectorAll('.segment-btn').forEach(function (btn) {
       btn.addEventListener('click', function () {
         document.querySelectorAll('.segment-btn').forEach(function (b) {
@@ -427,7 +438,6 @@
       });
     });
 
-    // 케이스 선택
     document.querySelectorAll('.case-btn').forEach(function (btn) {
       btn.addEventListener('click', function () {
         document.querySelectorAll('.case-btn').forEach(function (b) {
@@ -439,7 +449,6 @@
       });
     });
 
-    // 적용
     document.getElementById('applyBtn').addEventListener('click', function () {
       if (!selectedCase) return;
 
